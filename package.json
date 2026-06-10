@@ -1,0 +1,36 @@
+{
+	"name": "epublic",
+	"version": "1.0.0",
+	"description": "",
+	"main": "lib/epublic.js",
+	"scripts": {
+		"bundle": "rollup -c",
+		"watch": "rollup -wc",
+		"build": "rollup -c && tjs compile lib/epublic.js epublic"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "UNLICENSED",
+	"devEngines": {
+		"packageManager": {
+			"name": "pnpm",
+			"version": "^11.3.0",
+			"onFail": "download"
+		}
+	},
+	"type": "module",
+	"devDependencies": {
+		"@rollup/plugin-commonjs": "^29.0.3",
+		"@rollup/plugin-node-resolve": "^16.0.3",
+		"rollup": "^4.61.1",
+		"rollup-plugin-polyfill-node": "^0.13.0",
+		"rollup-plugin-scss": "^4.0.1",
+		"sass": "^1.100.0"
+	},
+	"dependencies": {
+		"@mozilla/readability": "^0.6.0",
+		"core-js": "^3.49.0",
+		"jszip": "^3.10.1",
+		"linkedom": "^0.18.12"
+	}
+}
