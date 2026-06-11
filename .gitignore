@@ -1,5 +1,7 @@
 epublic
-pnpm-workspace.yaml
+epublic.exe
 
 lib/
 node_modules/
+
+pnpm-workspace.yaml

@@ -8,6 +8,7 @@ import { DOMParser } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 
 import baseCss from './base.scss';
+import { version } from '../package.json';
 
 const mimeTypes = {
 	'.svg': 'image/svg+xml',
@@ -15,6 +16,8 @@ const mimeTypes = {
 	'.jpg': 'image/jpeg',
 	'.jpeg': 'image/jpeg',
 };
+
+const ua = `epublic/${version}`;
 
 function makeContent(doc, { doctype }) {
 	const { title, content, byline, siteName, dir, lang, publishedTime } = doc;
@@ -195,13 +198,13 @@ async function makeEpub(html, epubFile, { base }) {
 		if (base instanceof URL) {
 			const url = new URL(p, base);
 			try {
-				const res = await fetch(url.href);
+				const res = await fetch(url.href, { headers: { 'User-Agent': ua } });
 				ab = await res.arrayBuffer();
 			} catch (err) {
 				console.warn(err);
 			}
 		} else {
-			const source = p;
+			const source = path.resolve(base, p);
 			try {
 				ab = await tjs.readFile(source);
 			} catch (err) {
@@ -247,7 +250,7 @@ try {
 		html = new TextDecoder().decode(await tjs.readFile(input));
 	} else if (url) {
 		base = new URL(url);
-		const res = await fetch(url);
+		const res = await fetch(url, { headers: { 'Accept': 'text/html', 'User-Agent': ua } });
 		html = await res.text();
 	}
 	await makeEpub(html, output, { base });
