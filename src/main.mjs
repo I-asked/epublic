@@ -11,14 +11,18 @@ import baseCss from './base.scss';
 import fictionCss from './fiction.scss';
 import { version } from '../package.json';
 
+import { makeLink } from './domUtils.mjs';
+
 const mimeTypes = {
 	'.svg': 'image/svg+xml',
 	'.png': 'image/png',
 	'.jpg': 'image/jpeg',
 	'.jpeg': 'image/jpeg',
+	'.css': 'text/css',
+	'.xhtml': 'application/xhtml+xml',
 };
 
-const ua = `epublic/${version}`;
+const ua = `epublic/${version} (+https://github.com/I-asked/epublic/issues)`;
 
 function makeContent(doc, { doctype }) {
 	const { title, content, byline, siteName, dir, lang, publishedTime } = doc;
@@ -37,11 +41,7 @@ function makeContent(doc, { doctype }) {
 	titleEl.textContent = title ?? '';
 	head.appendChild(titleEl);
 
-	const styleEl = xml.createElement('link');
-	styleEl.setAttribute('rel', 'stylesheet');
-	styleEl.setAttribute('type', 'text/css');
-	styleEl.setAttribute('href', 'base.css');
-	head.appendChild(styleEl);
+	head.appendChild(makeLink(xml, { href: 'base.css' }));
 
 	const body = xml.createElement('body');
 	body.setAttribute('dir', dir ?? 'ltr');
@@ -90,18 +90,21 @@ function makePackage(doc, opt) {
 	xml.querySelector('dc\\:date').textContent = doc?.publishedTime ?? timeNow;
 	xml.querySelector('meta[property="dcterms:modified"]').textContent = opt?.modifiedTime ?? timeNow;
 
+	const makeItem = (document, { href }) => {
+		const el = xml.createElement('item');
+		el.setAttribute('id', `asset-u${crypto.randomUUID()}`);
+		el.setAttribute('href', href);
+		el.setAttribute('media-type', mimeTypes[path.extname(href)] ?? 'application/octet-stream');
+
+		return el;
+	}
+
 	const mf = xml.querySelector('manifest');
 	if (opt.assets) {
 		let i = 0;
 		for (const p of opt.assets) {
 			if (path.isAbsolute(p)) { continue; }
-
-			const el = xml.createElement('item');
-			mf.appendChild(el);
-
-			el.setAttribute('id', `asset-i${i++}`);
-			el.setAttribute('href', p);
-			el.setAttribute('media-type', mimeTypes[path.extname(p)] ?? 'application/octet-stream');
+			mf.appendChild(makeItem(xml, { href: p }));
 		}
 	}
 
@@ -136,7 +139,7 @@ function makeToc(doc, { title }) {
 		li.appendChild(a);
 	}
 
-	return xml.toString();
+	return xml;
 }
 
 function makeTocFromNode(el, { dir }) {
@@ -164,7 +167,7 @@ function makeTocFromNode(el, { dir }) {
 
 	el.remove();
 
-	return xml.toString();
+	return xml;
 }
 
 async function makeEpub(html, epubFile, { base, css, fiction, level }) {
@@ -188,27 +191,44 @@ async function makeEpub(html, epubFile, { base, css, fiction, level }) {
 		<rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/>
 	</rootfiles>
 </container>`);
-	let resetCss = baseCss;
-	if (fiction) { resetCss += fictionCss; }
+	const doctype = document.doctype;
+	const { xml, assets, toc } = makeContent(doc, { doctype });
+
+	const head = xml.querySelector('head');
+
+	const allAssets = [...assets];
+	if (fiction) {
+		allAssets.push('fiction.css');
+		head.appendChild(makeLink(xml, { href: 'fiction.css' }));
+	}
 	if (css) {
+		allAssets.push('user.css');
+		head.appendChild(makeLink(xml, { href: 'user.css' }));
+	}
+	zip.file('EPUB/package.opf', makePackage(doc, { assets: allAssets }));
+	let tocXml;
+	if (toc) {
+		tocXml = makeTocFromNode(toc, { dir: doc.dir });
+	} else {
+		console.warn('Auto-creating ToC');
+		tocXml = makeToc(doc, { title: doc.title });
+	}
+	const tocHead = tocXml.querySelector('head');
+
+	zip.file('EPUB/base.css', baseCss);
+	if (fiction) {
+		tocHead.appendChild(makeLink(tocXml, { href: 'fiction.css' }));
+		zip.file('EPUB/fiction.css', fictionCss);
+	}
+	if (css) {
+		tocHead.appendChild(makeLink(tocXml, { href: 'user.css' }));
 		try {
-			resetCss += await tjs.readFile(css);
+			zip.file('EPUB/user.css', await tjs.readFile(css));
 		} catch (err) {
-			console.warn(`Failed to load stylesheet "${css}":`, err);
+			console.warn(`Failed to load user stylesheet "${css}":`, err);
 		}
 	}
 
-	const doctype = document.doctype;
-	const { xml, assets, toc } = makeContent(doc, { doctype });
-	zip.file('EPUB/package.opf', makePackage(doc, { assets }));
-	if (toc) {
-		zip.file('EPUB/nav.xhtml', makeTocFromNode(toc, { dir: doc.dir }));
-	} else {
-		console.warn('Auto-creating ToC');
-		zip.file('EPUB/nav.xhtml', makeToc(doc, { title: doc.title }));
-	}
-	zip.file('EPUB/index.xhtml', xml.toString());
-	zip.file('EPUB/base.css', resetCss);
 	for (const p of assets) {
 		if (path.isAbsolute(p) || p.match(/(^|\/)\.{2}($|\/)/)) { continue; }
 
@@ -230,11 +250,15 @@ async function makeEpub(html, epubFile, { base, css, fiction, level }) {
 				console.warn(`Error at "${p}":`, err);
 			}
 		}
+
 		if (ab) {
 			console.log('Write:', p);
 			zip.file(`EPUB/${p}`, ab);
 		}
 	}
+
+	zip.file('EPUB/nav.xhtml', tocXml.toString());
+	zip.file('EPUB/index.xhtml', xml.toString());
 
 	console.log('Zipping up...');
 	await tjs.writeFile(epubFile, await zip.generateAsync({
@@ -249,7 +273,7 @@ async function makeEpub(html, epubFile, { base, css, fiction, level }) {
 }
 
 function printHelp() {
-	console.error(`Usage: ${tjs.args[0]} [-fh] [-l 0..9] [-c style.css] -o output.epub [-i input.html|-u https://www.w3.org/TR/epub-33/]
+	console.error(`Usage: ${tjs.args[0]} [-h] [-l 0..9] [-f none|fiction] [-c style.css] -o output.epub [-i input.html|-u https://www.w3.org/TR/epub-33/]
 
 Options:
 	-o OUTPUT
@@ -262,24 +286,30 @@ Options:
 		append contents of CSS to the embedded stylesheet
 	-l LEVEL
 		FLATE compression level (or 0 for store; defaults to 6)
+	-f FORMAT
+		use special formatting (available: [fiction, none]; defaults to none)
 
 Flags:
-	-f
-		use fiction formatting (indent paragraphs)
 	-h
 		display this help and exit`);
 }
 
 try {
-	const { url, input, output, css, level, fiction, help } = getopts(tjs.args.slice(1), {
-		alias: { h: 'help', u: 'url', i: 'input', o: 'output', c: 'css', f: 'fiction', l: 'level' },
-		string: ['url', 'input', 'output', 'css', 'level'],
-		boolean: ['fiction', 'help'],
+	const { url, input, output, css, level, format, help } = getopts(tjs.args.slice(1), {
+		alias: { h: 'help', u: 'url', i: 'input', o: 'output', c: 'css', f: 'format', l: 'level' },
+		string: ['url', 'input', 'output', 'css', 'format', 'level'],
+		boolean: ['help'],
 	});
 
 	if (help) {
 		printHelp();
 		tjs.exit(0);
+	}
+
+	if (format && format !== 'fiction' && format !== 'none') {
+		console.error('Unsupported format:', format);
+		printHelp();
+		tjs.exit(1);
 	}
 
 	let html, base;
@@ -295,7 +325,7 @@ try {
 		const res = await fetch(url, { headers: { 'Accept': 'text/html', 'User-Agent': ua } });
 		html = await res.text();
 	}
-	await makeEpub(html, output, { base, css, fiction, level });
+	await makeEpub(html, output, { base, css, fiction: (format === 'fiction'), level });
 } catch (err) {
 	console.error(err);
 	tjs.exit(1);
