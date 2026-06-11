@@ -8,6 +8,7 @@ import { DOMParser } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 
 import baseCss from './base.scss';
+import fictionCss from './fiction.scss';
 import { version } from '../package.json';
 
 const mimeTypes = {
@@ -166,11 +167,19 @@ function makeTocFromNode(el, { dir }) {
 	return xml.toString();
 }
 
-async function makeEpub(html, epubFile, { base }) {
+async function makeEpub(html, epubFile, { base, css, fiction, level }) {
+	level = parseInt(level || '6');
+	if (level < 0 || level > 9) {
+		throw 'level must be 0..9';
+	}
+
+	console.log('Parsing DOM...')
 	const document = (new DOMParser).parseFromString(html, 'text/html');
 
+	console.log('Applying readability tweaks...')
 	const doc = new Readability(document, { serializer: (el) => el }).parse();
 
+	console.log('Populating the spine...')
 	const zip = new JSZip;
 	zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
 	zip.file('META-INF/container.xml', `<?xml version="1.0" encoding="UTF-8"?>
@@ -179,6 +188,15 @@ async function makeEpub(html, epubFile, { base }) {
 		<rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/>
 	</rootfiles>
 </container>`);
+	let resetCss = baseCss;
+	if (fiction) { resetCss += fictionCss; }
+	if (css) {
+		try {
+			resetCss += await tjs.readFile(css);
+		} catch (err) {
+			console.warn(`Failed to load stylesheet "${css}":`, err);
+		}
+	}
 
 	const doctype = document.doctype;
 	const { xml, assets, toc } = makeContent(doc, { doctype });
@@ -190,7 +208,7 @@ async function makeEpub(html, epubFile, { base }) {
 		zip.file('EPUB/nav.xhtml', makeToc(doc, { title: doc.title }));
 	}
 	zip.file('EPUB/index.xhtml', xml.toString());
-	zip.file('EPUB/base.css', baseCss);
+	zip.file('EPUB/base.css', resetCss);
 	for (const p of assets) {
 		if (path.isAbsolute(p) || p.match(/(^|\/)\.{2}($|\/)/)) { continue; }
 
@@ -198,6 +216,7 @@ async function makeEpub(html, epubFile, { base }) {
 		if (base instanceof URL) {
 			const url = new URL(p, base);
 			try {
+				console.log(`Fetching resource at: ${url}`);
 				const res = await fetch(url.href, { headers: { 'User-Agent': ua } });
 				ab = await res.arrayBuffer();
 			} catch (err) {
@@ -220,20 +239,42 @@ async function makeEpub(html, epubFile, { base }) {
 	console.log('Zipping up...');
 	await tjs.writeFile(epubFile, await zip.generateAsync({
 		type: 'uint8array',
-		compression: 'DEFLATE',
-		compressionOptions: { level: 9 },
+		compression: level > 0
+			? 'DEFLATE'
+			: 'STORE',
+		compressionOptions: { level },
 	}));
+
+	console.log('All done!');
 }
 
 function printHelp() {
-	console.error(`Usage: ${tjs.args[0]} -o output.epub [-i input.html|-u https://www.w3.org/TR/epub-33/]`);
+	console.error(`Usage: ${tjs.args[0]} [-fh] [-l 0..9] [-c style.css] -o output.epub [-i input.html|-u https://www.w3.org/TR/epub-33/]
+
+Options:
+	-o OUTPUT
+		path to the resulting epub
+	-i INPUT
+		path to the pre-fetched webpage
+	-u URL
+		url of the webpage to fetch
+	-c CSS
+		append contents of CSS to the embedded stylesheet
+	-l LEVEL
+		FLATE compression level (or 0 for store; defaults to 6)
+
+Flags:
+	-f
+		use fiction formatting (indent paragraphs)
+	-h
+		display this help and exit`);
 }
 
 try {
-	const { url, input, output, help } = getopts(tjs.args.slice(1), {
-		alias: { h: 'help', u: 'url', i: 'input', o: 'output' },
-		string: ['url', 'input', 'output'],
-		boolean: ['help'],
+	const { url, input, output, css, level, fiction, help } = getopts(tjs.args.slice(1), {
+		alias: { h: 'help', u: 'url', i: 'input', o: 'output', c: 'css', f: 'fiction', l: 'level' },
+		string: ['url', 'input', 'output', 'css', 'level'],
+		boolean: ['fiction', 'help'],
 	});
 
 	if (help) {
@@ -250,10 +291,11 @@ try {
 		html = new TextDecoder().decode(await tjs.readFile(input));
 	} else if (url) {
 		base = new URL(url);
+		console.log('Fetching url...');
 		const res = await fetch(url, { headers: { 'Accept': 'text/html', 'User-Agent': ua } });
 		html = await res.text();
 	}
-	await makeEpub(html, output, { base });
+	await makeEpub(html, output, { base, css, fiction, level });
 } catch (err) {
 	console.error(err);
 	tjs.exit(1);
